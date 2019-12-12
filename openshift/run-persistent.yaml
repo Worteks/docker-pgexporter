@@ -1,0 +1,240 @@
+apiVersion: v1
+kind: Template
+labels:
+  app: pgexporter
+  template: pgexporter-persistent
+metadata:
+  annotations:
+    description: PostgreSQL database - persistent
+      see https://github.com/Worteks/docker-pgexporter
+    iconClass: icon-postgresql
+    openshift.io/display-name: PostgreSQL with Exporter
+    tags: database,postgres,postgresql
+  name: pgexporter-persistent
+objects:
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: postgres-${FRONTNAME}
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: ${POSTGRES_VOLUME_CAPACITY}
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    labels:
+      name: postgres-${FRONTNAME}
+    name: postgres-${FRONTNAME}
+  spec:
+    replicas: 1
+    selector:
+      name: postgres-${FRONTNAME}
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        labels:
+          name: postgres-${FRONTNAME}
+      spec:
+        containers:
+        - env:
+          - name: POSTGRESQL_USER
+            valueFrom:
+              secretKeyRef:
+                key: database-user
+                name: postgres-${FRONTNAME}
+          - name: POSTGRESQL_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: database-password
+                name: postgres-${FRONTNAME}
+          - name: POSTGRESQL_DATABASE
+            valueFrom:
+              secretKeyRef:
+                key: database-name
+                name: postgres-${FRONTNAME}
+          image: ' '
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            initialDelaySeconds: 30
+            tcpSocket:
+              port: 5432
+            timeoutSeconds: 1
+          name: postgresql
+          ports:
+          - containerPort: 5432
+            protocol: TCP
+          readinessProbe:
+            exec:
+              command:
+              - /bin/sh
+              - -i
+              - -c
+              - 'psql -h 127.0.0.1 -U $POSTGRESQL_USER -q -d $POSTGRESQL_DATABASE -c "SELECT 1"'
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+          resources:
+            limits:
+              cpu: ${POSTGRES_CPU_LIMIT}
+              memory: ${POSTGRES_MEMORY_LIMIT}
+          terminationMessagePath: /dev/termination-log
+          volumeMounts:
+          - mountPath: /var/lib/pgsql/data
+            name: data
+        - env:
+          - name: DATA_SOURCE_USER
+            valueFrom:
+              secretKeyRef:
+                key: database-user
+                name: postgres-${FRONTNAME}
+          - name: DATA_SOURCE_PASS
+            valueFrom:
+              secretKeyRef:
+                key: database-password
+                name: postgres-${FRONTNAME}
+          - name: DATA_SOURCE_HOST
+            value: 127.0.0.1
+          - name: DATA_SOURCE_DBNAME
+            valueFrom:
+              secretKeyRef:
+                key: database-name
+                name: postgres-${FRONTNAME}
+          image: ' '
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            initialDelaySeconds: 30
+            timeoutSeconds: 1
+            tcpSocket:
+              port: 9113
+          name: exporter
+          ports:
+          - containerPort: 9113
+            protocol: TCP
+          readinessProbe:
+            initialDelaySeconds: 5
+            httpGet:
+              path: /
+              port: 9113
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            limits:
+              cpu: "${EXPORTER_CPU_LIMIT}"
+              memory: "${EXPORTER_MEMORY_LIMIT}"
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        volumes:
+        - emptyDir: {}
+          name: data
+    triggers:
+    - imageChangeParams:
+        automatic: true
+        containerNames:
+        - postgresql
+        from:
+          kind: ImageStreamTag
+          name: postgresql:${POSTGRES_VERSION}
+          namespace: ${POSTGRES_NAMESPACE}
+      type: ImageChange
+    - imageChangeParams:
+        automatic: true
+        containerNames:
+        - exporter
+        from:
+          kind: ImageStreamTag
+          name: pgexporter-${POSTGRES_EXPORTER_IMAGE_FRONTNAME}:${POSTGRES_EXPORTER_IMAGE_TAG}
+      type: ImageChange
+    - type: ConfigChange
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      template.openshift.io/expose-uri: postgres://{.spec.clusterIP}:{.spec.ports[?(.name=="postgresql")].port}
+    name: postgres-${FRONTNAME}
+  spec:
+    ports:
+    - name: postgresql
+      port: 5432
+      targetPort: 5432
+    selector:
+      name: postgres-${FRONTNAME}
+    type: ClusterIP
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      description: Exposes Postgres Prometheus Exporter
+    labels:
+      ${PROMETHEUS_SERVICE_SELECTOR}: ${PROMETHEUS_SERVICE_MATCH}
+    name: pgexporter-${FRONTNAME}
+  spec:
+    ports:
+    - name: exporter
+      port: 9113
+      targetPort: 9113
+    selector:
+      name: postgres-${FRONTNAME}
+    type: ClusterIP
+parameters:
+- name: EXPORTER_CPU_LIMIT
+  description: Maximum amount of CPU an exporter container can use
+  displayName: Exporters CPU Limit
+  required: true
+  value: 50m
+- name: EXPORTER_MEMORY_LIMIT
+  description: Maximum amount of Memory an exporter container can use
+  displayName: Exporters Memory Limit
+  required: true
+  value: 64Mi
+- name: FRONTNAME
+  description: The name identifier assigned to objects defined in this template
+  displayName: Name
+  required: true
+  value: demo
+- name: POSTGRES_EXPORTER_IMAGE_FRONTNAME
+  description: The name assigned to ImageStream object defined in corresponding template
+  displayName: Name
+  required: true
+  value: wsweet
+- name: POSTGRES_EXPORTER_IMAGE_TAG
+  description: The ImageStreamTag we should pull images from
+  displayName: Tag
+  required: true
+  value: master
+- name: POSTGRES_CPU_LIMIT
+  description: Maximum amount of CPU the container can use.
+  displayName: CPU Limit
+  required: true
+  value: 300m
+- name: POSTGRES_MEMORY_LIMIT
+  description: Maximum amount of memory the container can use.
+  displayName: Memory Limit
+  required: true
+  value: 512Mi
+- name: POSTGRES_NAMESPACE
+  description: The OpenShift Namespace where the ImageStream resides.
+  displayName: Namespace
+  value: openshift
+- name: POSTGRES_VERSION
+  description: Version of Postgres image to be used (9.4, 9.5, 9.6, 10 or latest).
+  displayName: Version of Postgres Image
+  required: true
+  value: "9.6"
+- name: POSTGRES_VOLUME_CAPACITY
+  description: Volume space available for data, e.g. 512Mi, 2Gi.
+  displayName: Volume Capacity
+  required: true
+  value: 1Gi
+- name: PROMETHEUS_SERVICE_SELECTOR
+  description: Prometheus Selector (key)
+  displayName: Prometheus Service Selector Key
+  required: true
+  value: prometheus
+- name: PROMETHEUS_SERVICE_MATCH
+  description: Prometheus Selector (value)
+  displayName: Prometheus Service Selector Value
+  required: true
+  value: scrape-me
